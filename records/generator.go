@@ -275,7 +275,6 @@ func (rg *RecordGenerator) InsertState(sj StateJSON, domain string, ns string,
 		rg.SlaveIPs[slave.ID] = address
 	}
 
-
 	// complete crap - refactor me
 	for _, f := range sj.Frameworks {
 		fname := labels.AsDomainFrag(f.Name, spec)

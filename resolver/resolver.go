@@ -20,6 +20,7 @@ import (
 	mesos "github.com/mesos/mesos-go/mesosproto"
 	"github.com/mesosphere/mesos-dns/logging"
 	"github.com/mesosphere/mesos-dns/records"
+	"github.com/mesosphere/mesos-dns/resolver/tap"
 	"github.com/mesosphere/mesos-dns/util"
 	"github.com/miekg/dns"
 )
@@ -63,16 +64,23 @@ func (res *Resolver) records() *records.RecordGenerator {
 }
 
 // launches DNS server for a resolver, returns immediately
-func (res *Resolver) LaunchDNS() <-chan error {
-	// Handers for Mesos requests
-	dns.HandleFunc(res.config.Domain+".", panicRecover(res.HandleMesos))
-	// Handler for nonMesos requests
-	dns.HandleFunc(".", panicRecover(res.HandleNonMesos))
+func (res *Resolver) LaunchDNS(tap *tap.Tap) <-chan error {
+	muxInit := func(mux *dns.ServeMux, s *dns.Server) {
+		// Handers for Mesos requests
+		handler := dns.Handler(panicRecover(res.HandleMesos))
+		if tap != nil {
+			handler = tap.ClientSpike(s, handler)
+		}
+		mux.Handle(res.config.Domain+".", handler)
+
+		// Handler for nonMesos requests
+		mux.HandleFunc(".", panicRecover(res.HandleNonMesos))
+	}
 
 	errCh := make(chan error, 2)
-	_, e1 := res.Serve("tcp")
+	_, e1 := res.Serve("tcp", muxInit)
 	go func() { errCh <- <-e1 }()
-	_, e2 := res.Serve("udp")
+	_, e2 := res.Serve("udp", muxInit)
 	go func() { errCh <- <-e2 }()
 	return errCh
 }
@@ -80,15 +88,21 @@ func (res *Resolver) LaunchDNS() <-chan error {
 // starts a DNS server for net protocol (tcp/udp), returns immediately.
 // the returned signal chan is closed upon the server successfully entering the listening phase.
 // if the server aborts then an error is sent on the error chan.
-func (res *Resolver) Serve(proto string) (<-chan struct{}, <-chan error) {
+func (res *Resolver) Serve(proto string, dnsInit func(*dns.ServeMux, *dns.Server)) (<-chan struct{}, <-chan error) {
 	defer util.HandleCrash()
 
 	ch := make(chan struct{})
+	mux := dns.NewServeMux()
+
 	server := &dns.Server{
 		Addr:              net.JoinHostPort(res.config.Listener, strconv.Itoa(res.config.Port)),
 		Net:               proto,
 		TsigSecret:        nil,
 		NotifyStartedFunc: func() { close(ch) },
+		Handler:           mux,
+	}
+	if dnsInit != nil {
+		dnsInit(mux, server)
 	}
 
 	errCh := make(chan error, 1)
@@ -629,7 +643,7 @@ func (res *Resolver) RestService(req *restful.Request, resp *restful.Response) {
 
 // panicRecover catches any panics from the resolvers and sets an error
 // code of server failure
-func panicRecover(f func(w dns.ResponseWriter, r *dns.Msg)) func(w dns.ResponseWriter, r *dns.Msg) {
+func panicRecover(f func(w dns.ResponseWriter, r *dns.Msg)) dns.HandlerFunc {
 	return func(w dns.ResponseWriter, r *dns.Msg) {
 		defer func() {
 			if rec := recover(); rec != nil {

@@ -99,8 +99,10 @@ func SetConfig(cjson string) (c Config) {
 
 	// read configuration file
 	usr, _ := user.Current()
-	dir := usr.HomeDir + "/"
-	cjson = strings.Replace(cjson, "~/", dir, 1)
+	if usr != nil {
+		dir := usr.HomeDir + "/"
+		cjson = strings.Replace(cjson, "~/", dir, 1)
+	}
 
 	path, err := filepath.Abs(cjson)
 	if err != nil {

@@ -167,16 +167,16 @@ func onSignal(abort <-chan struct{}, s <-chan struct{}, f func()) {
 }
 
 // start TCP and UDP DNS servers and block, waiting for the server listeners to come up before returning
-func safeStartDNSResolver(t *testing.T, res *Resolver) {
+func safeStartDNSResolver(t *testing.T, res *Resolver, muxInit func(*dns.ServeMux, *dns.Server)) {
 	var abortOnce sync.Once
 	abort := make(chan struct{})
 	doAbort := func() {
 		abortOnce.Do(func() { close(abort) })
 	}
 
-	s1, e := res.Serve("udp")
+	s1, e := res.Serve("udp", muxInit)
 	f1 := onError(abort, e, func(err error) { t.Fatalf("udp server failed: %v", err) })
-	s2, e := res.Serve("tcp")
+	s2, e := res.Serve("tcp", muxInit)
 	f2 := onError(abort, e, func(err error) { t.Fatalf("tcp server failed: %v", err) })
 
 	var wg sync.WaitGroup
@@ -199,8 +199,9 @@ func TestHandler(t *testing.T) {
 		t.Error(err)
 	}
 
-	dns.HandleFunc("mesos.", res.HandleMesos)
-	safeStartDNSResolver(t, res)
+	safeStartDNSResolver(t, res, func(mux *dns.ServeMux, _ *dns.Server) {
+		mux.HandleFunc("mesos.", res.HandleMesos)
+	})
 
 	// test A records
 	msg, err = fakeQuery("chronos.marathon.mesos.", dns.TypeA, "udp", port)
@@ -319,8 +320,9 @@ func TestNonMesosHandler(t *testing.T) {
 		t.Error(err)
 	}
 
-	dns.HandleFunc(".", res.HandleNonMesos)
-	safeStartDNSResolver(t, res)
+	safeStartDNSResolver(t, res, func(mux *dns.ServeMux, _ *dns.Server) {
+		mux.HandleFunc(".", res.HandleNonMesos)
+	})
 
 	// test A records
 	msg, err = fakeQuery("google.com", dns.TypeA, "udp", port)

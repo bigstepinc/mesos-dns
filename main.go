@@ -9,6 +9,7 @@ import (
 	"github.com/mesosphere/mesos-dns/logging"
 	"github.com/mesosphere/mesos-dns/records"
 	"github.com/mesosphere/mesos-dns/resolver"
+	"github.com/mesosphere/mesos-dns/resolver/tap"
 	"github.com/mesosphere/mesos-dns/util"
 )
 
@@ -47,7 +48,13 @@ func main() {
 
 	// launch DNS server
 	if config.DNSOn {
-		dnsErr = resolver.LaunchDNS()
+		tapServer, errCh := tap.LocalListenAndServe()
+		go func() {
+			err := <-errCh
+			logging.Error.Fatalf("tap failed: %v", err)
+		}()
+		tap := tap.NewTap(tapServer.NewSink())
+		dnsErr = resolver.LaunchDNS(tap)
 	}
 
 	// launch HTTP server
