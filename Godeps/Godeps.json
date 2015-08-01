@@ -16,6 +16,14 @@
 			"Rev": "44145f04b68cf362d9c4df2182967c2275eaefed"
 		},
 		{
+			"ImportPath": "github.com/golang/protobuf/proto",
+			"Rev": "68c687dc49948540b356a6b47931c9be4fcd0245"
+		},
+		{
+			"ImportPath": "github.com/jdef/framestream",
+			"Rev": "f83a6ee7ce786bed461b7ab38ae0ea26ae7c8a79"
+		},
+		{
 			"ImportPath": "github.com/mesos/mesos-go/detector",
 			"Rev": "049b57bd9bd0550056f26b5ced76f36a820243eb"
 		},
