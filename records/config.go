@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mesosphere/mesos-dns/logging"
-	"github.com/mesosphere/mesos-dns/records/patterns"
+	"github.com/mesosphere/mesos-dns/records/tmpl"
 
 	"github.com/miekg/dns"
 )
@@ -76,8 +76,8 @@ type Config struct {
 	// EnforceRFC952 will enforce an older, more strict set of rules for DNS labels
 	EnforceRFC952 bool
 
-	// text/template style patterns for A-records of tasks
-	DomainPatterns []patterns.DomainPattern
+	// Templates are text/template style templates for A-records of Mesos tasks
+	Templates []tmpl.Template
 }
 
 // SetConfig instantiates a Config struct read in from config.json
@@ -138,12 +138,7 @@ func SetConfig(cjson string) Config {
 	logging.Verbose.Println("   - HttpOn: ", c.HTTPOn)
 	logging.Verbose.Println("   - ConfigFile: ", c.File)
 	logging.Verbose.Println("   - EnforceRFC952: ", c.EnforceRFC952)
-
-	patternStrings := make([]string, 0, len(c.DomainPatterns))
-	for _, s := range c.DomainPatterns {
-		patternStrings = append(patternStrings, string(s))
-	}
-	logging.Verbose.Println("   - DomainPatterns: " + strings.Join(patternStrings, ", "))
+	logging.Verbose.Printf("   - Templates: %+v", c.Templates)
 
 	return *c
 }
@@ -168,7 +163,7 @@ func readConfig(file string) (*Config, error) {
 		HTTPOn:         true,
 		ExternalOn:     true,
 		RecurseOn:      true,
-		DomainPatterns: patterns.DefaultDomainPatterns(),
+		Templates:      tmpl.DefaultTemplates(),
 	}
 
 	usr, err := user.Current()

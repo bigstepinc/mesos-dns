@@ -14,8 +14,8 @@ import (
 
 	"github.com/mesosphere/mesos-dns/logging"
 	"github.com/mesosphere/mesos-dns/records/labels"
-	"github.com/mesosphere/mesos-dns/records/patterns"
 	"github.com/mesosphere/mesos-dns/records/state"
+	"github.com/mesosphere/mesos-dns/records/tmpl"
 )
 
 // Map host/service name to DNS answer
@@ -52,7 +52,7 @@ func (rg *RecordGenerator) ParseState(leader string, c Config) error {
 		hostSpec = labels.RFC952
 	}
 
-	return rg.InsertState(sj, c.Domain, c.SOARname, c.Listener, c.Masters, hostSpec, c.DomainPatterns)
+	return rg.InsertState(sj, c.Domain, c.SOARname, c.Listener, c.Masters, hostSpec, c.Templates)
 }
 
 // Tries each master and looks for the leader
@@ -172,31 +172,30 @@ func hostToIP4(hostname string) (string, bool) {
 	return ip.String(), true
 }
 
-func compileNonCanonicalPatterns(dp []patterns.DomainPattern, spec labels.Func) []*patterns.CompiledDomainPattern {
-	compiledPatterns := make([]*patterns.CompiledDomainPattern, 0, len(dp))
-	for _, pattern := range dp {
-		compiled, err := pattern.Compile(spec)
+func compileNonCanonicalTemplates(ts []tmpl.Template, spec labels.Func) []*tmpl.Compiled {
+	compiled := make([]*tmpl.Compiled, 0, len(ts))
+	for _, t := range ts {
+		c, err := t.Compile(spec)
 		if err != nil {
 			logging.Error.Println(err)
 			continue
 		}
-		compiledPatterns = append(compiledPatterns, compiled)
+		compiled = append(compiled, c)
 	}
-	return compiledPatterns
+	return compiled
 }
 
-func compileEssentialPatterns(pattern string, spec labels.Func) *patterns.CompiledDomainPattern {
-	compiled, err := patterns.DomainPattern(pattern).Compile(spec)
+func compileEssentialTemplates(t tmpl.Template, spec labels.Func) *tmpl.Compiled {
+	compiled, err := t.Compile(spec)
 	if err != nil {
-		logging.Error.Fatalf("cannot compile invalid pattern %q: %v", pattern, err)
+		logging.Error.Fatalf("cannot compile invalid template %q: %v", t, err)
 	}
 	return compiled
 }
 
 // InsertState transforms a StateJSON into RecordGenerator RRs
-func (rg *RecordGenerator) InsertState(sj state.State, domain string,
-	ns string, listener string, masters []string, spec labels.Func,
-	domainPatterns []patterns.DomainPattern) error {
+func (rg *RecordGenerator) InsertState(sj state.State, domain, ns, listener string,
+	masters []string, spec labels.Func, templates []tmpl.Template) error {
 
 	rg.SlaveIPs = map[string]string{}
 	rg.SRVs = rrs{}
@@ -205,7 +204,7 @@ func (rg *RecordGenerator) InsertState(sj state.State, domain string,
 	rg.slaveRecords(sj, domain, spec)
 	rg.listenerRecord(listener, ns)
 	rg.masterRecord(domain, masters, sj.Leader)
-	rg.taskRecords(sj, domain, spec, domainPatterns)
+	rg.taskRecords(sj, domain, spec, templates)
 
 	return nil
 }
@@ -356,12 +355,12 @@ func (rg *RecordGenerator) listenerRecord(listener string, ns string) {
 }
 
 func (rg *RecordGenerator) taskRecords(sj state.State, domain string, spec labels.Func,
-	domainPatterns []patterns.DomainPattern) {
-	// pre-compile the patterns. Only do this once before all the records.
-	compiledPatterns := compileNonCanonicalPatterns(domainPatterns, spec)
-	canonicalPattern := compileEssentialPatterns("{name}-{task-id-hash}-{slave-id-short}.{framework}", spec)
-	tcpRFC2782Pattern := compileEssentialPatterns("_{name}._tcp.{framework}", spec)
-	udpRFC2782Pattern := compileEssentialPatterns("_{name}._udp.{framework}", spec)
+	templates []tmpl.Template) {
+	// pre-compile the tmpl. Only do this once before all the records.
+	compiledTemplates := compileNonCanonicalTemplates(templates, spec)
+	canonicalTemplate := compileEssentialTemplates("{name}-{task-id-hash}-{slave-id-short}.{framework}", spec)
+	tcpRFC2782Template := compileEssentialTemplates("_{name}._tcp.{framework}", spec)
+	udpRFC2782Template := compileEssentialTemplates("_{name}._udp.{framework}", spec)
 
 	// complete crap - refactor me
 	for _, f := range sj.Frameworks {
@@ -376,10 +375,10 @@ func (rg *RecordGenerator) taskRecords(sj state.State, domain string, spec label
 			}
 
 			// context used to build domain names
-			ctx := patterns.NewPatternContext(&task, fname, spec)
+			ctx := tmpl.NewContext(&task, fname, spec)
 
 			// insert canonical A records
-			trec, err := canonicalPattern.Execute(ctx, domain)
+			trec, err := canonicalTemplate.Execute(ctx, domain)
 			if err != nil {
 				logging.Error.Printf("error creating the canonical host name for task %v: %v", task, err)
 				continue
@@ -400,11 +399,10 @@ func (rg *RecordGenerator) taskRecords(sj state.State, domain string, spec label
 			}
 
 			// insert custom records
-			for _, cp := range compiledPatterns {
-				// apply pattern to the current record
+			for _, cp := range compiledTemplates {
 				host, err := cp.Execute(ctx, domain)
 				if err != nil {
-					logging.VeryVerbose.Printf("skipping because of error applying domain pattern %q to context %v: %v", cp.Pattern(), ctx, err)
+					logging.VeryVerbose.Printf("failed to template %q with context %v: %v", cp.Template, ctx, err)
 					continue
 				}
 
@@ -427,8 +425,8 @@ func (rg *RecordGenerator) taskRecords(sj state.State, domain string, spec label
 			// Add RFC 2782 SRV records
 			for _, port := range task.Ports() {
 				srvHost := trec + ":" + port
-				tcp, _ := tcpRFC2782Pattern.Execute(ctx, domain)
-				udp, _ := udpRFC2782Pattern.Execute(ctx, domain)
+				tcp, _ := tcpRFC2782Template.Execute(ctx, domain)
+				udp, _ := udpRFC2782Template.Execute(ctx, domain)
 				rg.insertRR(tcp, srvHost, "SRV")
 				rg.insertRR(udp, srvHost, "SRV")
 			}

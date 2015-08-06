@@ -1,6 +1,6 @@
-// Package patterns contains types to compile and interpolate domain patterns
+// Package tmpl contains types to compile and interpolate name templates
 // with a given context.
-package patterns
+package tmpl
 
 import (
 	"fmt"
@@ -14,38 +14,31 @@ import (
 	"github.com/mesosphere/mesos-dns/records/state"
 )
 
-// PatternContext is the namespace to resolve DomainPattern variables in
-type PatternContext map[string]string
+type (
+	// Context is the namespace to resolve Name template variables in.
+	Context map[string]string
 
-// DomainPattern holds a text/template pattern for a domain name to be interpolated
-// with a PatternContext.
-type DomainPattern string
+	// Template holds a text/template style tempalte for a DNS name.
+	Template string
 
-type token interface {
-	interpolate(context PatternContext) (string, error)
-	isSeparator() bool
-}
+	// Compiled is a compiled Template that can be executed efficiently
+	Compiled struct {
+		Template
+		tokens []token
+	}
 
-type separatorToken struct{}
-type stringToken string
-type variableToken string
+	token interface {
+		interpolate(Context) (string, error)
+		isSeparator() bool
+	}
 
-// CompiledDomainPattern is a compiled DomainPattern that can be executed efficiently
-type CompiledDomainPattern struct {
-	tokens  []token
-	pattern DomainPattern
-}
+	separatorToken struct{}
+	stringToken    string
+	variableToken  string
+)
 
-// defaultDomainPatterns is an non-exported default for the domain patterns. It
-// is not made public to avoid being mutable from outside.
-var defaultDomainPatterns = []DomainPattern{"{name}.{framework}"}
-
-// DefaultDomainPatterns returns a clone of the default domain patterns
-func DefaultDomainPatterns() []DomainPattern {
-	clone := make([]DomainPattern, len(defaultDomainPatterns))
-	copy(clone, defaultDomainPatterns)
-	return clone
-}
+// DefaultTemplates returns a the default name templates.
+func DefaultTemplates() []Template { return []Template{"{name}.{framework}"} }
 
 // addNonVariableTokens splits the given string s into partial labels and adds
 // tokens for them. It accepts labels with "_" depending on whether s is in the
@@ -85,7 +78,7 @@ func addNonVariableTokens(tokens []token, s string, leftMost, rightMost bool, sp
 		// prepend or append some character to check for RFC compatibility for non-inner labels.
 		//
 		// But don't do this if there is no variableToken on the left or the right, i.e. these
-		// tokens are the most left or the most right ones in the pattern.
+		// tokens are the most left or the most right ones in the template.
 		pre := ""
 		post := ""
 		if i == 0 && !leftMost {
@@ -96,45 +89,44 @@ func addNonVariableTokens(tokens []token, s string, leftMost, rightMost bool, sp
 		}
 
 		if escapedLabel := spec(pre + labelWithoutValidUnderscore + post); pre+labelWithoutValidUnderscore+post != escapedLabel {
-			return nil, fmt.Errorf("pattern substring %v is no valid label", label)
+			return nil, fmt.Errorf("templte substring %v is no valid label", label)
 		}
 		tokens = append(tokens, stringToken(label))
 	}
 	return tokens, nil
 }
 
-// Compile compiles domainPatterns. This code only runs for a handful of patterns
-// per InsertState run, i.e. is not time critical.
-func (dp DomainPattern) Compile(spec labels.Func) (*CompiledDomainPattern, error) {
+// Compile compiles a Template to a fast Compiled template.
+func (t Template) Compile(spec labels.Func) (*Compiled, error) {
 	tokens := []token{}
 
-	if string(dp) == "" {
-		return nil, fmt.Errorf("invalid empty domain pattern")
+	if string(t) == "" {
+		return nil, fmt.Errorf("invalid empty template")
 	}
 
-	// split pattern into tokens: strings, separators and {variables}
+	// split template into tokens: strings, separators and {variables}
 	varRE, err := regexp.Compile(`{[\s\w-:]*}`)
 	if err != nil {
-		logging.Error.Fatalf("invalid regular expression for variables in domain pattern: %v", err)
+		logging.Error.Fatalf("invalid regular expression for variables in template: %v", err)
 	}
 
 	// find variable references and work through the index list
-	varMatches := varRE.FindAllStringIndex(string(dp), -1)
+	varMatches := varRE.FindAllStringIndex(string(t), -1)
 	oldRight := 0
 	for i, m := range varMatches {
 		// extract variable identifier
 		left := m[0]
 		right := m[1]
-		identifier := strings.Trim(string(dp)[left+1:right-1], " \t")
+		identifier := strings.Trim(string(t)[left+1:right-1], " \t")
 		if identifier == "" {
-			return nil, fmt.Errorf("empty variable reference found in domain pattern %v", dp)
+			return nil, fmt.Errorf("empty variable reference found in template %v", t)
 		}
 
 		// create token for everything in front of the variable
 		leftMost := i == 0
-		tokens, err = addNonVariableTokens(tokens, string(dp)[oldRight:left], leftMost, false, spec)
+		tokens, err = addNonVariableTokens(tokens, string(t)[oldRight:left], leftMost, false, spec)
 		if err != nil {
-			return nil, fmt.Errorf("invalid domain pattern %v: %v", dp, err)
+			return nil, fmt.Errorf("invalid template %v: %v", t, err)
 		}
 
 		// add the actual variable token
@@ -147,37 +139,34 @@ func (dp DomainPattern) Compile(spec labels.Func) (*CompiledDomainPattern, error
 	// add pending tokens behind the last variable
 	leftMost := len(varMatches) == 0
 	rightMost := true
-	tokens, err = addNonVariableTokens(tokens, string(dp)[oldRight:len(dp)], leftMost, rightMost, spec)
+	tokens, err = addNonVariableTokens(tokens, string(t)[oldRight:len(t)], leftMost, rightMost, spec)
 	if err != nil {
-		return nil, fmt.Errorf("invalid domain pattern %v: %v", dp, err)
+		return nil, fmt.Errorf("invalid template %v: %v", t, err)
 	}
 
 	// check that the first and the last token is not a separator
 	if tokens[0].isSeparator() {
-		return nil, fmt.Errorf("domain pattern cannot start with a dot")
+		return nil, fmt.Errorf("template cannot start with a dot")
 	}
 	if tokens[len(tokens)-1].isSeparator() {
-		return nil, fmt.Errorf("domain pattern cannot end with a dot")
+		return nil, fmt.Errorf("template cannot end with a dot")
 	}
 
-	return &CompiledDomainPattern{
-		tokens:  tokens,
-		pattern: dp,
+	return &Compiled{
+		Template: t,
+		tokens:   tokens,
 	}, nil
 }
 
-// String returns the domain pattern string
-func (dp DomainPattern) String() string {
-	return string(dp)
-}
+// String returns the template string
+func (t Template) String() string { return string(t) }
 
-// Execute applies a patternContext to a pre-compiled DomainPattern by interpolating
+// Execute applies a Context to a pre-compiled Template by interpolating
 // the context values using the text.Template syntax.
-// This function is called for basically every record. Make sure it's fast.
-func (cdp *CompiledDomainPattern) Execute(context PatternContext, domain string) (string, error) {
-	labels := make([]string, 0, len(cdp.tokens)+3)
-	for _, t := range cdp.tokens {
-		label, err := t.interpolate(context)
+func (c *Compiled) Execute(ctx Context, domain string) (string, error) {
+	labels := make([]string, 0, len(c.tokens)+3)
+	for _, t := range c.tokens {
+		label, err := t.interpolate(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -187,34 +176,23 @@ func (cdp *CompiledDomainPattern) Execute(context PatternContext, domain string)
 	return strings.Join(labels, ""), nil
 }
 
-// Pattern returns the original uncompiled pattern
-func (cdp *CompiledDomainPattern) Pattern() DomainPattern {
-	return cdp.pattern
-}
-
-func (t separatorToken) interpolate(context PatternContext) (string, error) {
-	return ".", nil
-}
-
-func (t stringToken) interpolate(context PatternContext) (string, error) {
-	return string(t), nil
-}
-
-func (t variableToken) interpolate(context PatternContext) (string, error) {
-	value := context[string(t)]
+func (separatorToken) interpolate(Context) (string, error) { return ".", nil }
+func (t stringToken) interpolate(Context) (string, error)  { return string(t), nil }
+func (t variableToken) interpolate(ctx Context) (string, error) {
+	value := ctx[string(t)]
 	if value == "" {
-		return "", fmt.Errorf("%q is not defined in the pattern context %v", t, context)
+		return "", fmt.Errorf("%q is not defined in context %v", t, ctx)
 	}
 	return value, nil
 }
 
-func (t separatorToken) isSeparator() bool { return true }
-func (t stringToken) isSeparator() bool    { return false }
-func (t variableToken) isSeparator() bool  { return false }
+func (separatorToken) isSeparator() bool { return true }
+func (stringToken) isSeparator() bool    { return false }
+func (variableToken) isSeparator() bool  { return false }
 
-// NewPatternContext creates a patternContext for a given task and a label spec
-func NewPatternContext(task *state.Task, framework string, spec labels.Func) PatternContext {
-	context := PatternContext{
+// NewContext creates a template Context for a given task and a label spec.
+func NewContext(task *state.Task, framework string, spec labels.Func) Context {
+	context := Context{
 		"framework":      framework,
 		"slave-id-short": slaveIDTail(task.SlaveID),
 		"slave-id":       task.SlaveID,
@@ -245,7 +223,6 @@ func NewPatternContext(task *state.Task, framework string, spec labels.Func) Pat
 	return context
 }
 
-// specEachLabel
 func specEachLabel(s string, spec labels.Func) string {
 	labels := strings.Split(s, ".")
 	specLabels := make([]string, 0, len(labels))
