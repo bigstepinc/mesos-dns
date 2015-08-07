@@ -8,8 +8,8 @@ import (
 
 	"github.com/mesosphere/mesos-dns/logging"
 	"github.com/mesosphere/mesos-dns/records/labels"
-	"github.com/mesosphere/mesos-dns/records/patterns"
 	"github.com/mesosphere/mesos-dns/records/state"
+	"github.com/mesosphere/mesos-dns/records/tmpl"
 )
 
 func init() {
@@ -170,7 +170,7 @@ type TestRecord struct {
 	want []string
 }
 
-func testRecords(t *testing.T, domainPatterns []patterns.DomainPattern, spec labels.Func, records []TestRecord) {
+func testRecords(t *testing.T, ts []tmpl.Template, spec labels.Func, rs []TestRecord) {
 	var sj state.State
 
 	b, err := ioutil.ReadFile("../factories/fake.json")
@@ -184,11 +184,11 @@ func testRecords(t *testing.T, domainPatterns []patterns.DomainPattern, spec lab
 	masters := []string{"144.76.157.37:5050"}
 
 	var rg RecordGenerator
-	if err := rg.InsertState(sj, "mesos", "mesos-dns.mesos.", "127.0.0.1", masters, spec, domainPatterns); err != nil {
+	if err := rg.InsertState(sj, "mesos", "mesos-dns.mesos.", "127.0.0.1", masters, spec, ts); err != nil {
 		t.Fatal(err)
 	}
 
-	for i, tt := range records {
+	for i, tt := range rs {
 		var rrs rrs
 		switch tt.kind {
 		case a:
@@ -207,7 +207,7 @@ func testRecords(t *testing.T, domainPatterns []patterns.DomainPattern, spec lab
 
 // ensure we are parsing what we think we are
 func TestInsertState(t *testing.T) {
-	testRecords(t, patterns.DefaultDomainPatterns(), labels.RFC952, []TestRecord{
+	testRecords(t, tmpl.DefaultTemplates(), labels.RFC952, []TestRecord{
 		{a, "liquor-store.marathon.mesos.", []string{"1.2.3.11", "1.2.3.12"}},
 		{a, "_container.liquor-store.marathon.mesos.", []string{"10.3.0.1", "10.3.0.2"}},
 		{a, "poseidon.marathon.mesos.", nil},
@@ -231,13 +231,13 @@ func TestInsertState(t *testing.T) {
 	})
 }
 
-func TestInsertStateWithPatterns(t *testing.T) {
-	domainPatterns := []patterns.DomainPattern{
-		patterns.DomainPattern("slave-{slave-id-short}.{task-id}.{name}.{framework}"),
-		patterns.DomainPattern("{version}.{location}.{environment}"),
-		patterns.DomainPattern("{label:canary}.{name}"),
+func TestInsertStateWithTemplates(t *testing.T) {
+	templates := []tmpl.Template{
+		"slave-{slave-id-short}.{task-id}.{name}.{framework}",
+		"{version}.{location}.{environment}",
+		"{label:canary}.{name}",
 	}
-	testRecords(t, domainPatterns, labels.RFC1123, []TestRecord{
+	testRecords(t, templates, labels.RFC1123, []TestRecord{
 		{a, "slave-0.liquor-store.b8db9f73-562f-11e4-a088-c20493233aa5.liquor-store.marathon.mesos.", []string{"1.2.3.11"}},
 		{a, "_container.slave-0.liquor-store.b8db9f73-562f-11e4-a088-c20493233aa5.liquor-store.marathon.mesos.", []string{"10.3.0.1"}},
 		{a, "1.0.europe.prod.mesos.", []string{"1.2.3.11", "1.2.3.12"}},
